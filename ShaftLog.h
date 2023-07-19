@@ -1,0 +1,44 @@
+#include "ArduinoJson.h"
+
+
+typedef enum{
+    SEQUENCE_BEGIN,
+    LIFT_STATE,
+    SHAFT_VERSION,
+    WIFI_PASSWORD,
+    WIFI_USERID,
+    SET_FLOOR,
+}LOG_SEQUENCE;
+
+typedef enum{
+    COMM_IDLE,
+    COMM_WAIT_FOR_MESSAGE,
+    COMM_REQUEST_INITIAL_DATA,
+    COMM_SEND_INITIAL_DATA,
+    COMM_SEND_RECEIVED_DATA,
+    COMM_STOP
+}comm_state;
+
+typedef enum
+{
+    CALL_BOOKED,
+    CALL_CLEARED,
+    CALL_FAILED,
+    CURRENT_FLOOR,
+    ERROR_TYPE,
+    LOCK_STATUS,
+    CUSTOMER_NAME,
+    MOTOR_COUNT,
+    EV_STATUS,
+    LIDAR_VALUE,
+    OVERLOAD_SENSOR,
+    CALIBRATION_STATUS,
+    DOWNFLOOR_CALL,
+    UPFLOOR_CALL,
+    SAMEFLOOR_CALL,
+    READY_FOR_UPDATE
+}DATAPOINT_DP;
+
+void initData();
+void queueReceivedData();
+int sendMSgToShaft(LOG_SEQUENCE log_st, int value);
