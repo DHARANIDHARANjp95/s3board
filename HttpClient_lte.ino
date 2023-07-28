@@ -47,9 +47,13 @@ void sendQueuedDataToGSM()
   }
   else
   {
-    if(emptyQueue() && (millis() - checkInterval > 30*1000))
+    if(emptyQueue())
     {
+      if( (millis() - checkInterval > 30*1000))
+      {
+        checkInterval=millis();
         otaRoutine();
+      }
     }
   }
 }
