@@ -2,7 +2,7 @@
 #include <ArduinoJson.h>
 #include "ShaftLog.h"
 #include "gsm_module.h"
-
+#include "freertos/FreeRTOS.h"
 String mes="";
 
 
@@ -16,35 +16,59 @@ void setup() {
   loggerInit();
   gsm_init();
   delay(10);
-
+  xTaskCreate(HighPriorityTask, "tskHP", 2048, NULL, 2, &taskHpHandle);
   Serial.println("Wait...");
 }
 
+//loop runs on core 1
 void loop() 
 {
-  otaTimer(false);
-  // sendQueuedDataToGSM();
-  // getUpdateMsg();
+  // otaTimer(false);
+   connectApn();
+   sendQueuedDataToGSM();
+   updateQueue();
+   delay(1);
   //getData();
 }
 
 
 void sendQueuedDataToGSM()
 {
-  mes = queueReceivedData();
-  if(mes.length() > 0)
+  static long int checkInterval = millis();
+  if(shaftCount()!=GSMcount())
   {
-    publishSerialData(mes);
+    Serial.printf("Shaft msg count = %d GSM push count = %d\n", shaftCount(), GSMcount());
+    String newMsg = getFirstMsg();
+    if(newMsg.length()>0)
+    {
+      publishSerialData(newMsg);
+      checkInterval=millis();
+    }
+  }
+  else
+  {
+    if(emptyQueue() && (millis() - checkInterval > 30*1000))
+    {
+        otaRoutine();
+    }
   }
 }
 
-void getUpdateMsg()
-{
-
-}
-
+//task runs on core 0
 void HighPriorityTask(void *args)
 {
-  //initData();
-  mes = queueReceivedData();
+  while(1)
+  {
+    sendReceivedMsgToQueue();
+    //testData();
+    delay(1);
+  }
+}
+
+void updateQueue()
+{
+  if(pushChange())
+  {
+    popFront();
+  }
 }

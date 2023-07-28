@@ -90,3 +90,11 @@ void initData();
 String queueReceivedData();
 int sendMSgToShaft(LOG_SEQUENCE log_st, int value);
 void loggerInit();
+
+void sendReceivedMsgToQueue();
+int shaftCount();
+
+void popFront();
+String getFirstMsg();
+void testData();
+bool emptyQueue();

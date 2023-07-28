@@ -3,8 +3,10 @@
 bool shaftCommEstablished = false;
 #include <iostream>
 #include <queue>
+
 using namespace std;
 queue<uint8_t> statemsg, datamsg;
+queue<String> shaftMsg;
 
 LOG_SEQUENCE log_sq;
 comm_state cm_st;
@@ -18,6 +20,11 @@ void sendAttributes(DATAPOINT_DP state, DATAPOINT_DP data);
 #define SERIAL1_RXPIN 25
 #define SERIAL1_TXPIN 26
 
+int queuedMsgCount = 0;
+/****************************************/
+bool onceChecked = true;
+/****************************************/
+void pushMsg(String locl);
 void loggerInit()
 {
     Serial1.begin(115200, SERIAL_8N1, SERIAL1_RXPIN, SERIAL1_TXPIN);
@@ -480,4 +487,58 @@ int sendMSgToShaft(LOG_SEQUENCE log_st, int value)
 void sendTelemetry(DATAPOINT_DP state, DATAPOINT_DP data)
 {
 
+}
+void sendReceivedMsgToQueue()
+{
+    String recvMsg = queueReceivedData();  
+    if(recvMsg.length()>0)
+    {
+        pushMsg(recvMsg);
+    } 
+}
+
+int shaftCount()
+{
+    return queuedMsgCount;
+}
+
+String getFirstMsg()
+{
+    return shaftMsg.front();;
+}
+
+void popFront()
+{
+    shaftMsg.pop();
+}
+
+void testData()
+{
+    static long int timerin = millis();
+    
+    if(onceChecked && (millis() - timerin > 15*1000))
+    {
+        timerin=millis();
+        onceChecked=false;
+        for(int i=0;i<5;i++)
+        {
+            doc["state"]="call_booked";
+            String _msg="";
+            serializeJson(doc, _msg);
+            Serial.println(_msg);
+            pushMsg(_msg);
+        }
+
+    }
+}
+
+void pushMsg(String locl)
+{
+    shaftMsg.push(locl);
+    queuedMsgCount++;
+}
+
+bool emptyQueue()
+{
+    return shaftMsg.empty();
 }

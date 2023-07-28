@@ -26,7 +26,7 @@ const int port = 80;
 TinyGsm        modem(Serial2);
 
 TinyGsmClient client(modem);
-HttpClient    http(client, server, port);
+HttpClient    http(client, IoTserver, IoTport);
 
 String message="";
 
@@ -37,6 +37,9 @@ char urlResource[80];
 char shaftResource[80];
 char cabinresource[80];
 
+
+
+int pushedMsgCount = 0;
 float cur_version = 1.0;
 float next_version = cur_version+0.1;
 
@@ -53,9 +56,8 @@ int otaDisableTime;
 
 File file;
 
-void connectInternet();
-void otaRoutine();
 void initSpiffs();
+
 void gsm_init()
 {
     Serial2.begin(115200);
@@ -76,7 +78,7 @@ void connectInternet()
   SerialMon.print(apn);
   if (!modem.gprsConnect(apn, gprsUser, gprsPass)) {
     SerialMon.println(" fail");
-    delay(10000);
+    delay(100);
     return;
   }
   SerialMon.println(" success");
@@ -161,6 +163,7 @@ void publishSerialData(String s)
   // SerialMon.println(body);
   http.stop();
   SerialMon.println(F("Server disconnected"));
+  pushedMsgCount++;
 }
 
 void initSpiffs()
@@ -453,14 +456,31 @@ void otaTimer(bool state)
     }
 }
 
+int GSMcount()
+{
+    return pushedMsgCount;
+}
+
+bool pushChange()
+{
+    bool state = false;
+    static long int prevValue = 0;
+    if(prevValue!=pushedMsgCount)
+    {
+        prevValue=pushedMsgCount;
+        state = true;
+    }
+    return state;
+}
+
 bool connectApn()
 {
-  Serial.print("Connecting to ");
-  Serial.print(apn);
+//   Serial.print("Connecting to ");
+//   Serial.print(apn);
   if (!modem.gprsConnect(apn, user, pass))
   {
-      Serial.println(" fail");
-      return false;
+    Serial.println(" fail");
+    return false;
   }
   else
   {
