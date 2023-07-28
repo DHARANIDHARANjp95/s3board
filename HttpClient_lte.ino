@@ -64,7 +64,7 @@ void HighPriorityTask(void *args)
   while(1)
   {
     sendReceivedMsgToQueue();
-    //testData();
+    testData();
     delay(1);
   }
 }

@@ -37,7 +37,7 @@ char urlResource[80];
 char shaftResource[80];
 char cabinresource[80];
 
-
+#define BLINK_LED 2
 
 int pushedMsgCount = 0;
 float cur_version = 1.0;
@@ -61,6 +61,7 @@ void initSpiffs();
 void gsm_init()
 {
     Serial2.begin(115200);
+    pinMode(BLINK_LED,OUTPUT);
     Serial.println("Initializing modem...");
     modem.restart();
     String modemInfo = modem.getModemInfo();
@@ -144,6 +145,7 @@ void getData()
 }
 void publishSerialData(String s)
 {
+digitalWrite(BLINK_LED,HIGH);
   Serial.println("Json value ="+s);
   int err = http.post(coords, "application/json", s);
   if (err != 0)
@@ -164,6 +166,7 @@ void publishSerialData(String s)
   http.stop();
   SerialMon.println(F("Server disconnected"));
   pushedMsgCount++;
+  digitalWrite(BLINK_LED,LOW);
 }
 
 void initSpiffs()
