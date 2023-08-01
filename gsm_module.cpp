@@ -145,7 +145,7 @@ void getData()
 }
 void publishSerialData(String s)
 {
-digitalWrite(BLINK_LED,HIGH);
+  digitalWrite(BLINK_LED,HIGH);
   Serial.println("Json value ="+s);
   int err = http.post(coords, "application/json", s);
   if (err != 0)

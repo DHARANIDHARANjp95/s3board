@@ -490,11 +490,16 @@ void sendTelemetry(DATAPOINT_DP state, DATAPOINT_DP data)
 }
 void sendReceivedMsgToQueue()
 {
+    static String prevMsg = "";
     String recvMsg = queueReceivedData();  
-    if(recvMsg.length()>0)
+    if(prevMsg != recvMsg)
     {
-        pushMsg(recvMsg);
-    } 
+        if(recvMsg.length()>0)
+        {
+            pushMsg(recvMsg);
+        } 
+        prevMsg = recvMsg;
+    }
 }
 
 int shaftCount()
@@ -504,7 +509,7 @@ int shaftCount()
 
 String getFirstMsg()
 {
-    return shaftMsg.front();;
+    return shaftMsg.front();
 }
 
 void popFront()

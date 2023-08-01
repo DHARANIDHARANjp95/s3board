@@ -35,9 +35,9 @@ void loop()
 void sendQueuedDataToGSM()
 {
   static long int checkInterval = millis();
-  if(shaftCount()!=GSMcount())
+  if(!emptyQueue())
   {
-    Serial.printf("Shaft msg count = %d GSM push count = %d\n", shaftCount(), GSMcount());
+    //Serial.printf("Shaft msg count = %d GSM push count = %d\n", shaftCount(), GSMcount());
     String newMsg = getFirstMsg();
     if(newMsg.length()>0)
     {
@@ -47,14 +47,11 @@ void sendQueuedDataToGSM()
   }
   else
   {
-    if(emptyQueue())
-    {
       if( (millis() - checkInterval > 30*1000))
       {
         checkInterval=millis();
         otaRoutine();
       }
-    }
   }
 }
 
