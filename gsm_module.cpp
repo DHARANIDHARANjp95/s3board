@@ -158,8 +158,8 @@ void publishSerialData(String s)
   {
     Serial.println("post connected");
   }
-  int status = http.responseStatusCode();
-  Serial.printf("status code= %d\n",status);
+  //int status = http.responseStatusCode();
+  //Serial.printf("status code= %d\n",status);
   // String body = http.responseBody();
   // SerialMon.println(F("Response:"));
   // SerialMon.println(body);
@@ -215,7 +215,7 @@ void makeRequest()
   }
 }
 
-void readRequest()
+int readRequest()
 {
   Serial.println("Reading header");
     while (client.available())
@@ -233,6 +233,7 @@ void readRequest()
             break;
         }
     }
+    return contentLength;
   Serial.println("Content length = "+ String(contentLength));
 }
 
@@ -403,9 +404,15 @@ void otaRoutine()
   {
     connectAWSServer();
     makeRequest();
-    readRequest();
-    writeResponse(); 
-    updateFromFS();    
+    if(readRequest())
+    {
+      writeResponse(); 
+      updateFromFS();  
+    } 
+    else
+    {
+      Serial.println("empty content");
+    } 
   }
 }
 

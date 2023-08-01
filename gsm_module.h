@@ -8,7 +8,7 @@ void getData();
 void publishSerialData(String s);
 void connectAWSServer();
 void makeRequest();
-void readRequest();
+int readRequest();
 void writeResponse();
 void printPercent(uint32_t readLength, uint32_t contentLength);
 void performUpdate(Stream &updateSource, size_t updateSize);

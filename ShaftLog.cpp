@@ -482,6 +482,7 @@ String queueReceivedData()
 int sendMSgToShaft(LOG_SEQUENCE log_st, int value)
 {
     Serial1.println("{\"sequence_begin\":true}");
+    return 0;
 }
 
 void sendTelemetry(DATAPOINT_DP state, DATAPOINT_DP data)
