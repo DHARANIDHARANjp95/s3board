@@ -3,6 +3,12 @@
 #include <LittleFS.h>
 #include <Update.h>
 
+typedef enum
+{
+  ATTRIBUTE,
+  TELEMETRY
+} call_type;
+
 void gsm_init();
 void getData();
 void publishSerialData(String s);

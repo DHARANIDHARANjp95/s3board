@@ -1,4 +1,4 @@
-#include "ArduinoJson.h"
+#include <ArduinoJson.h>
 
 
 typedef enum{
@@ -98,3 +98,4 @@ void popFront();
 String getFirstMsg();
 void testData();
 bool emptyQueue();
+void getShaftDetails();

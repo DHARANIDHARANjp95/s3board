@@ -12,7 +12,8 @@ LOG_SEQUENCE log_sq;
 comm_state cm_st;
 DATAPOINT_DP dt_dp;
 
-DynamicJsonDocument doc(500);
+bool receivedMsg = false;
+
 String postMsg = "";
 void sendTelemetry(DATAPOINT_DP state, DATAPOINT_DP data);
 void sendAttributes(DATAPOINT_DP state, DATAPOINT_DP data);
@@ -77,6 +78,7 @@ String queueReceivedData()
     {
         s = Serial1.readStringUntil('}');
         s=s+"}";
+        Serial.println("received message = "+s);
     }
     return s;
 }
@@ -492,15 +494,27 @@ void sendTelemetry(DATAPOINT_DP state, DATAPOINT_DP data)
 void sendReceivedMsgToQueue()
 {
     static String prevMsg = "";
-    String recvMsg = queueReceivedData();  
-    if(prevMsg != recvMsg)
-    {
-        if(recvMsg.length()>0)
+    String recvMsg =  queueReceivedData(); 
+     if(recvMsg.length()>2) //excluding curly braces
+     {
+        if(recvMsg.indexOf("version")>-1)
         {
-            pushMsg(recvMsg);
-        } 
-        prevMsg = recvMsg;
-    }
+            //version is available
+            // StaticJsonBuffer<200> doc;
+            // deserializeJson(doc, recvMsg);
+        }
+        else
+        {
+            if(prevMsg != recvMsg)
+            {
+                Serial.println("received msg after comparing = "+recvMsg);
+                pushMsg(recvMsg);
+                prevMsg = recvMsg;
+            }
+        }
+     }
+
+
 }
 
 int shaftCount()
@@ -516,6 +530,7 @@ String getFirstMsg()
 void popFront()
 {
     shaftMsg.pop();
+    Serial.println("Popped the first one");
 }
 
 void testData()
@@ -528,13 +543,19 @@ void testData()
         onceChecked=false;
         for(int i=0;i<5;i++)
         {
-            doc["state"]="call_booked";
+            DynamicJsonDocument doc(250);
+            doc["key"]="testing_code";
+            doc["type"]=0;
+            doc["cabin_floor"]=random(0,4);
             String _msg="";
-            serializeJson(doc, _msg);
-            Serial.println(_msg);
+            serializeJson(doc, _msg);  
             pushMsg(_msg);
+            // JsonObject object = doc.as<JsonObject>();
+            // object.remove("type");
+            // object.remove("key");
+            // _msg="";
+            // serializeJson(doc, _msg);
         }
-
     }
 }
 
@@ -547,4 +568,19 @@ void pushMsg(String locl)
 bool emptyQueue()
 {
     return shaftMsg.empty();
+}
+
+
+/// @brief 
+void getShaftDetails()
+{
+    static long int interval = millis();
+    if(!receivedMsg && (millis() - interval > 5000))
+    {
+        DynamicJsonDocument doc(250);
+        doc["state"]="shaft_attributes";
+        String _msg="";
+        serializeJson(doc, Serial1); 
+        doc.clear();       
+    }
 }
