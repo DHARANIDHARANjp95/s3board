@@ -5,11 +5,11 @@
 
 #define TINY_GSM_RX_BUFFER 650
 
-const char coords[] = "/api/v1/testing_code/telemetry";
+
 #define TINY_GSM_USE_GPRS true
 
 // Your GPRS credentials, if any
-const char apn[]      = "internet";
+const char apn[]      = "airtelgprs.com";
 const char gprsUser[] = "";
 const char gprsPass[] = "";
 
@@ -145,9 +145,33 @@ void getData()
 }
 void publishSerialData(String s)
 {
+  DynamicJsonDocument doc(250);
+  deserializeJson(doc, s);
+  DynamicJsonDocument doc1 = doc;
+  String _msg="";
+  serializeJson(doc1, _msg);
+  JsonObject object = doc1.as<JsonObject>();
+  object.remove("type");
+  object.remove("key");
+  _msg="";
+  serializeJson(doc1, _msg);
+  Serial.println("message retained ="+_msg);
+  String authKey = doc["key"];
+  String msgtype="";
+  int typeVal = doc["type"];
+  if(typeVal == ATTRIBUTE)
+  {
+    msgtype="attributes";
+  }
+  else
+  {
+    msgtype="telemetry";
+  }
+  //msgtype="telemetry";
   digitalWrite(BLINK_LED,HIGH);
-  Serial.println("Json value ="+s);
-  int err = http.post(coords, "application/json", s);
+  String coords = "/api/v1/"+authKey+"/"+msgtype;
+  Serial.println(coords);
+  int err = http.post(coords, "application/json", _msg);
   if (err != 0)
   {
     SerialMon.println(F("failed to connect"));
@@ -158,8 +182,8 @@ void publishSerialData(String s)
   {
     Serial.println("post connected");
   }
-  //int status = http.responseStatusCode();
-  //Serial.printf("status code= %d\n",status);
+  // int status = http.responseStatusCode();
+  // Serial.printf("status code= %d\n",status);
   // String body = http.responseBody();
   // SerialMon.println(F("Response:"));
   // SerialMon.println(body);
@@ -489,7 +513,7 @@ bool connectApn()
 //   Serial.print(apn);
   if (!modem.gprsConnect(apn, user, pass))
   {
-    Serial.println(" fail");
+    Serial.println("apn fail");
     return false;
   }
   else

@@ -16,7 +16,7 @@ void setup() {
   loggerInit();
   gsm_init();
   delay(10);
-  xTaskCreate(HighPriorityTask, "tskHP", 2048, NULL, 2, &taskHpHandle);
+  xTaskCreate(HighPriorityTask, "tskHP", 2048, NULL, 1, &taskHpHandle);
   Serial.println("Wait...");
 }
 
@@ -24,11 +24,12 @@ void setup() {
 void loop() 
 {
   // otaTimer(false);
-   connectApn();
-   sendQueuedDataToGSM();
-   updateQueue();
-   delay(1);
-  //getData();
+  //getShaftDetails();
+  //testJson();
+  connectApn();
+  sendQueuedDataToGSM();
+  updateQueue();
+  delay(1);
 }
 
 
@@ -60,8 +61,8 @@ void HighPriorityTask(void *args)
 {
   while(1)
   {
-    sendReceivedMsgToQueue();
-    testData();
+     sendReceivedMsgToQueue();
+     //testData();
     delay(1);
   }
 }
@@ -70,6 +71,23 @@ void updateQueue()
 {
   if(pushChange())
   {
+    Serial.println("removing top value");
     popFront();
+  }
+}
+
+void testJson()
+{
+  static long int intervalTimer = millis();
+  if(millis() - intervalTimer > 1000)
+  {
+    intervalTimer=millis();
+    DynamicJsonDocument doc(250);
+    doc["key"]="testing_code";
+    doc["type"]=1;
+    doc["cabin_floor"]=random(0,4);
+    String _msg="";
+    serializeJson(doc, _msg);  
+    //publishSerialData(_msg);
   }
 }
