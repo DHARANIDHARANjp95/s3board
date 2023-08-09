@@ -27,8 +27,9 @@ void loop()
   //getShaftDetails();
   //testJson();
   connectApn();
-  sendQueuedDataToGSM();
-  updateQueue();
+  otaRoutine();
+  // sendQueuedDataToGSM();
+  // updateQueue();
   delay(1);
 }
 

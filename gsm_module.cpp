@@ -1,25 +1,37 @@
 #include "gsm_module.h"
 #include <ArduinoJson.h>
+
+#include "updateControllers.h"
 #define TINY_GSM_MODEM_SIM7600
 #define SerialMon Serial  
 
 #define TINY_GSM_RX_BUFFER 650
 
+String shaftVersion = "1.1";
+String cabinVersion = "1.1";
+
+String shaftURL = "";
+String cabinURL = "";
+
+String authKey = "factoryG3";
+String shaftFile = "shaftFirmware";
+String cabinFile = "cabinFirmware";
 
 #define TINY_GSM_USE_GPRS true
 
 // Your GPRS credentials, if any
-const char apn[]      = "airtelgprs.com";
+const char apn[]      = "internet";
 const char gprsUser[] = "";
 const char gprsPass[] = "";
 
 const char user[] = "";
 const char pass[] = "";
 // Server details
-const char IoTserver[]   = "13.126.126.206";
-const char server[] = "esp32otabalajitest.s3.ap-south-1.amazonaws.com";
+char* IoTserver  = "13.126.126.206";
 const int  IoTport       = 8080;
-const int port = 80;
+
+char* awsserver = "esp32otabalajitest.s3.ap-south-1.amazonaws.com";
+const int awsport = 80;
 #include <TinyGsmClient.h>
 #include <ArduinoHttpClient.h>
 
@@ -32,15 +44,15 @@ String message="";
 
 String makerId = "ASM_S3_PRO_1";
 String sNo = "factoryg3";
-String controllerType="ltemodule";
+String controllerType="debug";
 char urlResource[80];
 char shaftResource[80];
-char cabinresource[80];
+char iotResource[100];
 
 #define BLINK_LED 2
 
 int pushedMsgCount = 0;
-float cur_version = 1.0;
+float cur_version = 1.1;
 float next_version = cur_version+0.1;
 
 bool prevBusyState;
@@ -57,18 +69,41 @@ int otaDisableTime;
 File file;
 
 void initSpiffs();
+DynamicJsonDocument writeAttributeResponse();
+
+void deviceUpdate();
+void controllerBoardAttributes();
+void downloadControllerFirmware();
+
+void  downloadShaftFirmware();
+void  downloadCabinFirmware();
+
+void makeAttributeRequest(String _buff);
+void updateFromFS();
+void setAuthKey(String _authkey);
+
+void  setShaftAttributes(String _fwUrl,String _fwVer);
+void  setcabinAttributes(String _swUrl, String _swVer);
+
+void addToProcess(String val, int value);
+
+bool shaftUpdateAvailable = false;
+bool cabinUpdateAvailable = false;
+
+ota_stages shaft_ota = OTA_IDLE;
+ota_stages cabin_ota = OTA_IDLE;
 
 void gsm_init()
 {
     Serial2.begin(115200);
     pinMode(BLINK_LED,OUTPUT);
     Serial.println("Initializing modem...");
-    modem.restart();
+    modem.init();
     String modemInfo = modem.getModemInfo();
     Serial.print("Modem Info: ");
     Serial.println(modemInfo);
     //connectInternet();
-    snprintf (urlResource, sizeof(urlResource), "/ASM_S3_PRO_1/%s/%s/%.1f/lte.bin", controllerType, sNo, next_version);
+    snprintf (urlResource, sizeof(urlResource), "/ASM_S3_PRO_1/%s/%.1f/lte.bin", controllerType,next_version);
     Serial.println(urlResource);
     initSpiffs();
 }
@@ -91,7 +126,7 @@ void getData()
 {
   SerialMon.print(F("Performing HTTP GET request... "));
   int err = 0;
-  http.get(urlResource);
+  http.get(shaftResource);
   if (err != 0) 
   {
     SerialMon.println(F("failed to connect"));
@@ -143,9 +178,10 @@ void getData()
   // modem.gprsDisconnect();
   // SerialMon.println(F("GPRS disconnected"));  
 }
+
 void publishSerialData(String s)
 {
-  DynamicJsonDocument doc(250);
+  DynamicJsonDocument doc(524);
   deserializeJson(doc, s);
   DynamicJsonDocument doc1 = doc;
   String _msg="";
@@ -156,41 +192,69 @@ void publishSerialData(String s)
   _msg="";
   serializeJson(doc1, _msg);
   Serial.println("message retained ="+_msg);
-  String authKey = doc["key"];
+  String _authKey = (doc["key"]);
+  setAuthKey(_authKey);
   String msgtype="";
   int typeVal = doc["type"];
   if(typeVal == ATTRIBUTE)
   {
     msgtype="attributes";
   }
-  else
+  else if(typeVal == TELEMETRY)
   {
     msgtype="telemetry";
   }
-  //msgtype="telemetry";
-  digitalWrite(BLINK_LED,HIGH);
-  String coords = "/api/v1/"+authKey+"/"+msgtype;
-  Serial.println(coords);
-  int err = http.post(coords, "application/json", _msg);
-  if (err != 0)
+  else if(typeVal == SHAFT_VERSION)
   {
-    SerialMon.println(F("failed to connect"));
-    delay(100);
-    return;
+    msgtype = "shaft_version";
+  }else if(typeVal == CABIN_VERSION)
+  {
+    msgtype = "cabin_version";
+  }else if(typeVal == SHAFT_OTA_INIT)
+  {
+    msgtype = "shaft_ota_init";
+  }
+  //msgtype="telemetry";
+  if((typeVal == ATTRIBUTE) || (typeVal == TELEMETRY)  )
+  {
+      digitalWrite(BLINK_LED,HIGH);
+      String coords = "/api/v1/"+authKey+"/"+msgtype;
+      Serial.println(coords);
+      int err = http.post(coords, "application/json", _msg);
+      if (err != 0)
+      {
+        SerialMon.println(F("failed to connect"));
+        delay(100);
+        return;
+      }
+      else
+      {
+        Serial.println("post connected");
+      }
+      // int status = http.responseStatusCode();
+      // Serial.printf("status code= %d\n",status);
+      // String body = http.responseBody();
+      // SerialMon.println(F("Response:"));
+      // SerialMon.println(body);
+      http.stop();
+      SerialMon.println(F("Server disconnected"));
+      pushedMsgCount++;
+      digitalWrite(BLINK_LED,LOW);
   }
   else
   {
-    Serial.println("post connected");
+    if(typeVal == SHAFT_OTA_INIT)
+    {
+      if(doc["state"]=="busy")
+      {
+        //shiftUpdateAvailable = true;
+      }
+      else if(doc["state"]=="idle")
+      {
+        addToProcess("true", SHAFT_OTA_ACK);
+      }
+    }
   }
-  // int status = http.responseStatusCode();
-  // Serial.printf("status code= %d\n",status);
-  // String body = http.responseBody();
-  // SerialMon.println(F("Response:"));
-  // SerialMon.println(body);
-  http.stop();
-  SerialMon.println(F("Server disconnected"));
-  pushedMsgCount++;
-  digitalWrite(BLINK_LED,LOW);
 }
 
 void initSpiffs()
@@ -202,13 +266,13 @@ void initSpiffs()
   }
 }
 
-void connectAWSServer()
+void connectServer(char * _server, int _port)
 {
   Serial.print("Connecting to ");
-  Serial.print(server);
+  Serial.print(_server);
 
   // if you get a connection, report back via serial:
-  if (!client.connect(server, port))
+  if (!client.connect(_server, _port))
   {
       Serial.println(" fail");
       return;
@@ -220,11 +284,13 @@ void connectAWSServer()
 }
 
 
-void makeRequest()
+
+void makeRequest(char* _server, char* urlPath)
 {
   // Make a HTTP request:
-  client.print(String("GET ") + String(urlResource) + " HTTP/1.0\r\n");
-  client.print(String("Host: ") + server + "\r\n");
+
+  client.print(String("GET ") + String(urlPath) + " HTTP/1.0\r\n");
+  client.print(String("Host: ") + _server + "\r\n");
   client.print("Connection: close\r\n\r\n");
 
   timeout = millis();
@@ -246,7 +312,7 @@ int readRequest()
     {
         String line = client.readStringUntil('\n');
         line.trim();    
-        //Serial.println(line);    // Uncomment this to show response header
+        Serial.println(line);    // Uncomment this to show response header
         line.toLowerCase();
         if (line.startsWith("content-length:"))
         {
@@ -260,38 +326,6 @@ int readRequest()
     return contentLength;
   Serial.println("Content length = "+ String(contentLength));
 }
-
-void writeResponse()
-{
-    timeout = millis();
-    uint32_t readLength = 0;
-    unsigned long timeElapsed = millis();
-    //printPercent(readLength, contentLength);
-    LittleFS.remove("/update.bin");
-    file = LittleFS.open("/update.bin", FILE_APPEND);
-    while (readLength < contentLength && client.connected() && millis() - timeout < 10000L)
-    {
-        int i = 0;
-        while (client.available())
-        {
-                // read file data to LittleFS
-            if (!file.print(char(client.read())))
-            {
-                //Serial.println("Appending file");
-            }
-            readLength++;
-
-            if (readLength % (contentLength / 13) == 0)
-            {
-                printPercent(readLength, contentLength);
-            }
-            timeout = millis();
-        }
-    }
-
-    file.close();
-}
-
 
 void printPercent(uint32_t readLength, uint32_t contentLength)
 {
@@ -379,6 +413,7 @@ void updateFromFS()
     else
     {
         Serial.println("binary file not available");
+        return;
     }
 }
 
@@ -424,70 +459,94 @@ void performUpdate(Stream &updateSource, size_t updateSize)
 
 void otaRoutine()
 {
+   deviceUpdate();
+   //controllerBoardAttributes();
+   //downloadControllerFirmware();
+}
+
+void deviceUpdate()
+{
+  static bool prevState = false;
+  if(prevBusyState == false)
+  {
+    bool state = downloadFirmware(DEVICE_OTA);
+    prevBusyState=state;
+  }
+  else
+  {
+    updateFromFS();
+  }
+}
+
+void controllerBoardAttributes()
+{
+    char swurl[100];
+    snprintf (iotResource, sizeof(iotResource), "/api/v1/%s/attributes?sharedKeys=fw_version,fw_url",authKey);
+    client.stop();
+    if(connectApn())
+    {
+      connectServer(IoTserver,IoTport);
+      makeAttributeRequest(String(iotResource));
+      readRequest();
+      DynamicJsonDocument doc = writeAttributeResponse();
+      //String cabUrl = doc["shared"]["sw_url"];
+      String shafURL = doc["shared"]["fw_url"];
+      
+      //String cabVer = doc["shared"]["sw_version"];
+      String shafVer = doc["shared"]["fw_version"]; 
+      Serial.println(" Shaftver: "+shafVer+" Shafturl: "+shafURL);
+      setShaftAttributes(shafURL,shafVer);
+      //setcabinAttributes(cabUrl,cabVer);
+    }
+}
+
+bool downloadFirmware(OTA_device dv)
+{
+  bool status = false;
+  char endPoint[80];
+  switch (dv)
+  {
+  case SHAFT_OTA:
+  {
+    shaftURL.toCharArray(endPoint, shaftURL.length() + 1);
+//    memcpy(endPoint, shaftURL.c_str(), sizeof(shaftURL));
+  }
+  break;
+  case CABIN_OTA:
+  {
+    memcpy(endPoint, cabinURL.c_str(), sizeof(cabinURL));
+  }
+  break;
+  case DEVICE_OTA:
+  {
+    memcpy(endPoint, urlResource, sizeof(urlResource));
+  }
+  break;
+  default:
+    break;
+  }
+  Serial.println("endPoint = ");
+  //Serial.println("Endpoint is "+String(endPoint));
+  for(int i=0;i<(shaftURL.length()+1);i++)
+  {
+    Serial.print(endPoint[i]);
+  }
+
   if(connectApn())
   {
-    connectAWSServer();
-    makeRequest();
+    connectServer(awsserver, awsport);
+    makeRequest(awsserver, endPoint);
     if(readRequest())
     {
-      writeResponse(); 
-      updateFromFS();  
+      writeFirmware(dv); 
+      status = true;
     } 
     else
     {
       Serial.println("empty content");
     } 
   }
-}
-
-// void otaTimer(bool state)
-// {
-//     if (prevBusyState!=state)
-//     {
-//         //if state = false, idle state start otatimer
-//         if(!state)
-//         {
-//             otaStatus=true; 
-//         }
-//         else
-//         {
-//             otaStatus=false;
-//             otaTimerStart=false;
-//         }
-//         //if state = true, busy, stop and reset timer.
-//     }
-//     prevBusyState=state;
-//     if(otaStatus)
-//     {
-//       otaTimerStart = true;
-//       otaStatus=false;
-//       otaDisableTime = millis(); //
-//       printf("*************************OTA check after %d minutes*************************\n", otaCheck);
-//     }
-//     else
-//     {
-//       if(otaTimerStart)
-//       {
-//         if(tickDiff(otaDisableTime,millis()) > otaDelay)
-//         {
-//           otaTimerStart=false;
-//           otaStatus=true;
-//           printf("*************************OTA check begins*************************\n");
-//           otaRoutine();
-//         }
-//       }
-//     }
-// }
-
-
-void otaTimer(bool state)
-{
-    static long int timerV = millis();
-    if(millis() - timerV > 30*1000)
-    {   
-        otaRoutine();
-        timerV = millis();
-    }
+  return status;
 }
 
 int GSMcount()
@@ -519,5 +578,286 @@ bool connectApn()
   else
   {
     return true;
+  }
+}
+
+DynamicJsonDocument writeAttributeResponse()
+{
+    timeout = millis();
+    uint32_t readLength = 0;
+    Serial.println("Content size - "+ String(contentLength));
+    //#define max_size 1*1024
+    String attribResponse;   
+    while (readLength < contentLength && client.connected() && millis() - timeout < 10000L)
+    {
+        attribResponse+=char(client.read());
+    }
+    Serial.println(attribResponse);
+    DynamicJsonDocument doc(contentLength+50);
+    deserializeJson(doc, attribResponse);
+    return doc;
+}
+
+
+void writeFirmware(int _num)
+{
+    timeout = millis();
+    uint32_t readLength = 0;
+
+    unsigned long timeElapsed = millis();
+    //printPercent(readLength, contentLength);
+    if(_num == SHAFT_OTA)
+    {
+      LittleFS.remove("/fwUpdate.bin");//delete if existing already.
+      file = LittleFS.open("/fwUpdate.bin", FILE_APPEND);
+      Serial.println("Delete and append shaft file");
+    } 
+    else if(_num == CABIN_OTA)
+    {
+      LittleFS.remove("/swUpdate.bin");//delete if existing already.
+      file = LittleFS.open("/swUpdate.bin", FILE_APPEND);
+      Serial.println("Delete and append cabin file");
+    }
+    else if(_num == DEVICE_OTA)
+    {
+      LittleFS.remove("/update.bin");//delete if existing already.
+      file = LittleFS.open("/update.bin", FILE_APPEND);     
+      Serial.println("Delete and append device file"); 
+    }
+
+    while (readLength < contentLength && client.connected() && millis() - timeout < 10000L)
+    {
+        int i = 0;
+        while (client.available())
+        {
+                // read file data to spiffs
+            if (!file.print(char(client.read())))
+            {
+                Serial.println("*************************Appending file*************************");
+            }
+            //Serial.print((char)c);       // Uncomment this to show data
+            //crc.update(c);
+            readLength++;
+
+            if (readLength % (contentLength / 13) == 0)
+            {
+                printPercent(readLength, contentLength);
+            }
+            timeout = millis();
+        }
+    }
+
+    file.close();  
+}
+
+void setAuthKey(String _authkey)
+{
+  authKey = _authkey;
+}
+
+
+void makeAttributeRequest(String _buff)
+{
+  // Make a HTTP request:
+  client.print(String("GET ") + _buff + " HTTP/1.0\r\n"); //
+  client.print(String("Host: ") + IoTserver + "\r\n");
+  //client.print(String("Cache-Control: max-age=0 ")+ "\r\n"); //no-cache, no-store, max-age=0, must-revalidate
+  client.print(String("Cache-Control: no-cache, no-store, max-age=0, must-revalidate ")+ "\r\n"); //no-cache, no-store, max-age=0, must-revalidate
+  client.print("Connection: close\r\n\r\n");
+
+  timeout = millis();
+  while (client.available() == 0)
+  {
+      if (millis() - timeout > 5000L)
+      {
+          Serial.println(">>> Client Timeout !");
+          client.stop();
+          delay(1000L);
+          return;
+      }
+  }
+}
+
+void  setShaftAttributes(String _fwUrl,String _fwVer)
+{
+  shaftURL = _fwUrl;
+  if(shaftVersion != _fwVer)
+  {
+    Serial.println("Shaft Version changed");
+    Serial.println("shaft version is "+shaftVersion+ " new version is "+_fwVer);
+    shaftVersion = _fwVer;
+    if(shaftURL!=NULL)
+    {
+      shaftUpdateAvailable = true;
+      addToProcess(_fwVer, SHAFT_VERSION);
+    }
+    else
+    {
+      shaftUpdateAvailable = false; 
+    }
+    //send message to shaft that update is available
+  }
+  else
+  {
+    shaftUpdateAvailable=false;
+  }
+}
+
+void  setcabinAttributes(String _swUrl, String _swVer)
+{
+  cabinURL = _swUrl;
+  if(cabinVersion != _swVer)
+  {
+      cabinVersion = _swVer;
+      cabinUpdateAvailable = true;
+      //send message to cabin that update is available
+  }
+}
+
+void downloadControllerFirmware()
+{
+  downloadShaftFirmware();
+  //downloadCabinFirmware();
+}
+
+void downloadShaftFirmware()
+{
+  static bool prevShaftState = false;
+  switch(shaft_ota)
+  {
+    case OTA_IDLE:
+    {
+
+    }
+    break;
+    case OTA_POSSIB:
+    {
+
+    }
+    break;
+    case OTA_NOT_NEEDED:
+    {
+    
+    }
+    break;
+    case OTA_SEND_ACK_GSM:
+    {
+
+    }
+    break;
+    case OTA_SEND_DEC_GSM:
+    {
+
+    }
+    break;
+    case OTA_AWAIT_ACK_GSM:
+    {
+
+    }
+    break;
+    case OTA_SEND_ACK_CABIN:
+    {
+
+    }
+    break;
+    case OTA_SEND_DEC_CABIN:
+    {
+
+    }
+    break;
+    case OTA_COMPLETE_END_CABIN:
+    {
+
+    }
+    break;
+    case OTA_DISCONNECT_ESP_NOW:
+    {
+
+    }
+    break;
+    case OTA_CONNECT_WIFI:
+    {
+
+    }
+    break;
+    case OTA_CONNECT_SERVER:
+    {
+
+    }
+    break;
+    case OTA_DOWNLOAD_FILE:
+    {
+
+    }
+    break;
+    case OTA_UPDATE:
+    {
+
+    }
+    break;
+    case OTA_ERROR:
+    {
+
+    }
+    break;
+    case OTA_COMPLETE:
+    {
+
+    }
+    break;
+    default:
+    {
+      Serial.println("caught error");
+    }
+    break;
+  }
+  if(shaftUpdateAvailable)
+  {
+    bool state = downloadFirmware(SHAFT_OTA);
+    if(prevShaftState!=state)
+    {
+      prevShaftState=state;
+      if(state)
+      {
+        //send message to shaft that update is downloaded and ready
+      }
+      else
+      {
+        Serial.println("Shaft OTA Error occured ");
+      }
+    }
+
+  }
+}
+
+void downloadCabinFirmware()
+{
+  if(cabinUpdateAvailable)
+  {
+    bool state = downloadFirmware(CABIN_OTA);
+    if(state)
+    {
+      //send message to shaft that update is downloaded and ready
+    }
+    else
+    {
+      Serial.println("cabin OTA Error occured ");
+    }
+  }
+}
+
+void addToProcess(String val, int value)
+{
+  static String prevVal = "";
+  if(prevVal != val)
+  {
+    prevVal=val;
+    Serial1.flush();
+    DynamicJsonDocument doc(200);
+    doc["type"]=value;
+    doc["state"]=val;
+    serializeJson(doc,Serial1);  
+    //Serial.println("&&&&");
+    doc.clear(); 
   }
 }

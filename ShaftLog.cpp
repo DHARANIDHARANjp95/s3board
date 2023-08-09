@@ -571,7 +571,7 @@ bool emptyQueue()
 }
 
 
-/// @brief 
+
 void getShaftDetails()
 {
     static long int interval = millis();
@@ -579,6 +579,7 @@ void getShaftDetails()
     {
         DynamicJsonDocument doc(250);
         doc["state"]="shaft_attributes";
+        doc["value"]=1;
         String _msg="";
         serializeJson(doc, Serial1); 
         doc.clear();       
