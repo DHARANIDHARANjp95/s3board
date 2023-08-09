@@ -3,17 +3,6 @@
 #include <LittleFS.h>
 #include <Update.h>
 
-typedef enum
-{
-  ATTRIBUTE,
-  TELEMETRY,
-  SHAFT_VERSION,
-  CABIN_VERSION,
-  LIFT_STATUS,
-  SHAFT_OTA_INIT,
-  SHAFT_OTA_ACK,
-} call_type;
-
 typedef enum 
 {
     SHAFT_OTA,

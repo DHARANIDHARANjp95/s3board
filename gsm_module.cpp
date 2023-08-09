@@ -18,7 +18,7 @@ String shaftFile = "shaftFirmware";
 String cabinFile = "cabinFirmware";
 
 #define TINY_GSM_USE_GPRS true
-
+#define CHUNK_SIZE 1024
 // Your GPRS credentials, if any
 const char apn[]      = "internet";
 const char gprsUser[] = "";
@@ -51,8 +51,20 @@ char iotResource[100];
 
 #define BLINK_LED 2
 
+typedef enum
+{
+  ATTRIBUTE,
+  TELEMETRY,
+  SHAFT_VERSION,
+  SHAFT_NEW_VERSION,
+  CABIN_VERSION,
+  LIFT_STATUS,
+  SHAFT_OTA_INIT,
+  SHAFT_OTA_ACK,
+} call_type;
+
 int pushedMsgCount = 0;
-float cur_version = 1.1;
+float cur_version = 1.0;
 float next_version = cur_version+0.1;
 
 bool prevBusyState;
@@ -625,28 +637,30 @@ void writeFirmware(int _num)
       Serial.println("Delete and append device file"); 
     }
 
-    while (readLength < contentLength && client.connected() && millis() - timeout < 10000L)
-    {
-        int i = 0;
-        while (client.available())
-        {
-                // read file data to spiffs
-            if (!file.print(char(client.read())))
-            {
-                Serial.println("*************************Appending file*************************");
-            }
-            //Serial.print((char)c);       // Uncomment this to show data
-            //crc.update(c);
-            readLength++;
-
-            if (readLength % (contentLength / 13) == 0)
-            {
-                printPercent(readLength, contentLength);
-            }
-            timeout = millis();
-        }
-    }
-
+	int downloadRemaining = contentLength;
+	
+	uint8_t* buffer_ = (uint8_t*)malloc(CHUNK_SIZE);
+	uint8_t* cur_buffer = buffer_;
+	while ( downloadRemaining > 0 && client.connected() ) 
+	{
+		while (client.available()) 
+		{
+		  
+		  auto available_buffer_size = CHUNK_SIZE - (cur_buffer - buffer_);
+		  
+		  auto read_count = client.read(cur_buffer, ((downloadRemaining > available_buffer_size) ? available_buffer_size : downloadRemaining));
+		  cur_buffer += read_count;
+		  downloadRemaining -= read_count;
+		  // If one chunk of data has been accumulated, write to SD card
+		  if (cur_buffer - buffer_ == read_count) 
+      {
+        Serial.printf("remaining is %d read_count is %d\n",downloadRemaining,read_count);
+        file.write(buffer_, read_count);
+			//file.print(buffer_, CHUNK_SIZE);
+			  cur_buffer = buffer_;
+		  }
+		}
+	}
     file.close();  
 }
 
@@ -689,7 +703,7 @@ void  setShaftAttributes(String _fwUrl,String _fwVer)
     if(shaftURL!=NULL)
     {
       shaftUpdateAvailable = true;
-      addToProcess(_fwVer, SHAFT_VERSION);
+      addToProcess(_fwVer, SHAFT_NEW_VERSION);
     }
     else
     {
