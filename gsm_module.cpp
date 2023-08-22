@@ -1,24 +1,50 @@
+#include "FS.h"
+#include <LittleFS.h>
+#include <Update.h>
+
+#include "indicator.h"
+#include "updateControllers.h"
 #include "gsm_module.h"
+#include "ShaftLog.h"
 #include <ArduinoJson.h>
 
-#include "updateControllers.h"
+#include <bits/stdc++.h>
+using namespace std;
+
+struct product {
+    int x;
+    String y;
+
+    product (int i, String j) : x(i), y(j) {}
+} ;
+
+queue<product> gsmMessage;
+
+void publishSerialData(product s);
+product getFirstMsg();
+
+
 #define TINY_GSM_MODEM_SIM7600
 #define SerialMon Serial  
 
 #define TINY_GSM_RX_BUFFER 650
 
-String shaftVersion = "1.1";
-String cabinVersion = "1.1";
+struct{
+    String cabin_version = "";
+    String shaft_version = "";
+    String shaft_online = "";
+    String cabin_online = "";
+    String authKey = "";
+    String shaftURL = "";
+    String cabinURL = "";
+    bool shaftFirmwareDownloaded = false;
+    bool cabinFirmwareDownloaded = false;  
+}version_details;
 
-String shaftURL = "";
-String cabinURL = "";
-
-String authKey = "factoryG3";
-String shaftFile = "shaftFirmware";
-String cabinFile = "cabinFirmware";
 
 #define TINY_GSM_USE_GPRS true
-#define CHUNK_SIZE 1024
+#define CHUNK_SIZE (2*1024)
+
 // Your GPRS credentials, if any
 const char apn[]      = "internet";
 const char gprsUser[] = "";
@@ -32,6 +58,14 @@ const int  IoTport       = 8080;
 
 char* awsserver = "esp32otabalajitest.s3.ap-south-1.amazonaws.com";
 const int awsport = 80;
+
+long int cabinTimer = millis();
+long int shaftTimer = millis();
+long int controllerTImer = millis();
+long int reAlertTimer = millis();
+
+int timedOut = 0;
+
 #include <TinyGsmClient.h>
 #include <ArduinoHttpClient.h>
 
@@ -49,6 +83,8 @@ char urlResource[80];
 char shaftResource[80];
 char iotResource[100];
 
+void deletePreviosuFiles();
+
 #define BLINK_LED 2
 
 typedef enum
@@ -56,15 +92,18 @@ typedef enum
   ATTRIBUTE,
   TELEMETRY,
   SHAFT_VERSION,
+  SHAFT_KEY,
   SHAFT_NEW_VERSION,
   CABIN_VERSION,
   LIFT_STATUS,
   SHAFT_OTA_INIT,
   SHAFT_OTA_ACK,
+  SHAFT_OTA_COMPLETE,
+  CABIN_OTA_COMPLETE,
 } call_type;
 
 int pushedMsgCount = 0;
-float cur_version = 1.0;
+float cur_version = 1.1;
 float next_version = cur_version+0.1;
 
 bool prevBusyState;
@@ -83,38 +122,44 @@ File file;
 void initSpiffs();
 DynamicJsonDocument writeAttributeResponse();
 
-void deviceUpdate();
-void controllerBoardAttributes();
+bool deviceUpdate();
 void downloadControllerFirmware();
 
-void  downloadShaftFirmware();
-void  downloadCabinFirmware();
+bool  downloadShaftFirmware();
+bool  downloadCabinFirmware();
 
 void makeAttributeRequest(String _buff);
 void updateFromFS();
 void setAuthKey(String _authkey);
 
-void  setShaftAttributes(String _fwUrl,String _fwVer);
-void  setcabinAttributes(String _swUrl, String _swVer);
+bool  setShaftAttributes(String _fwUrl,String _fwVer);
+bool  setcabinAttributes(String _swUrl, String _swVer);
 
 void addToProcess(String val, int value);
+
+void resetShaftAlert();
 
 bool shaftUpdateAvailable = false;
 bool cabinUpdateAvailable = false;
 
-ota_stages shaft_ota = OTA_IDLE;
-ota_stages cabin_ota = OTA_IDLE;
+ota_stages shaft_ota = OTA_DELAY_TIMER;
+ota_stages cabin_ota = OTA_DELAY_TIMER;
+ota_stages controller_ota = OTA_DELAY_TIMER;
+#define DELAY_MINUTES    01
+#define DELAY_HOURS      0
+#define DELAY_SECONDS    10
+
+#define TIMER_CHECK ((DELAY_HOURS*60*60 + DELAY_MINUTES*60 + DELAY_SECONDS)*1000)
 
 void gsm_init()
 {
     Serial2.begin(115200);
-    pinMode(BLINK_LED,OUTPUT);
+    initLED();
     Serial.println("Initializing modem...");
     modem.init();
     String modemInfo = modem.getModemInfo();
     Serial.print("Modem Info: ");
     Serial.println(modemInfo);
-    //connectInternet();
     snprintf (urlResource, sizeof(urlResource), "/ASM_S3_PRO_1/%s/%.1f/lte.bin", controllerType,next_version);
     Serial.println(urlResource);
     initSpiffs();
@@ -134,140 +179,148 @@ void connectInternet()
   if (modem.isGprsConnected()) { SerialMon.println("GPRS connected"); }
 }
 
-void getData()
+void parseData(String s)
 {
-  SerialMon.print(F("Performing HTTP GET request... "));
-  int err = 0;
-  http.get(shaftResource);
-  if (err != 0) 
-  {
-    SerialMon.println(F("failed to connect"));
-    delay(100);
-    return;
-  }
-
-  int status = http.responseStatusCode();
-  SerialMon.print(F("Response status code: "));
-  SerialMon.println(status);
-  if (!status) {
-    delay(100);
-    return;
-  }
-
-  SerialMon.println(F("Response Headers:"));
-  while (http.headerAvailable()) 
-  {
-    String headerName  = http.readHeaderName();
-    String headerValue = http.readHeaderValue();
-    SerialMon.println("    " + headerName + " : " + headerValue);
-  }
-
-  int length = http.contentLength();
-  if (length >= 0) {
-    SerialMon.print(F("Content length is: "));
-    SerialMon.println(length);
-  }
-  if (http.isResponseChunked()) 
-  {
-    SerialMon.println(F("The response is chunked"));
-  }
-  if(message!="")
-  {
-    Serial.println(message);
-    publishSerialData(message);
-  }
-  // String body = http.responseBody();
-  // SerialMon.println(F("Response:"));
-  // SerialMon.println(body);
-
-  // SerialMon.print(F("Body length is: "));
-  // SerialMon.println(body.length());
-
-  // Shutdown
-
-  // http.stop();
-  // SerialMon.println(F("Server disconnected"));
-  // modem.gprsDisconnect();
-  // SerialMon.println(F("GPRS disconnected"));  
-}
-
-void publishSerialData(String s)
-{
-  DynamicJsonDocument doc(524);
+  DynamicJsonDocument doc(200);
   deserializeJson(doc, s);
-  DynamicJsonDocument doc1 = doc;
-  String _msg="";
-  serializeJson(doc1, _msg);
-  JsonObject object = doc1.as<JsonObject>();
-  object.remove("type");
-  object.remove("key");
-  _msg="";
-  serializeJson(doc1, _msg);
-  Serial.println("message retained ="+_msg);
-  String _authKey = (doc["key"]);
-  setAuthKey(_authKey);
-  String msgtype="";
+  int msgtype=0;
   int typeVal = doc["type"];
-  if(typeVal == ATTRIBUTE)
+  switch(typeVal)
   {
-    msgtype="attributes";
-  }
-  else if(typeVal == TELEMETRY)
-  {
-    msgtype="telemetry";
-  }
-  else if(typeVal == SHAFT_VERSION)
-  {
-    msgtype = "shaft_version";
-  }else if(typeVal == CABIN_VERSION)
-  {
-    msgtype = "cabin_version";
-  }else if(typeVal == SHAFT_OTA_INIT)
-  {
-    msgtype = "shaft_ota_init";
-  }
-  //msgtype="telemetry";
-  if((typeVal == ATTRIBUTE) || (typeVal == TELEMETRY)  )
-  {
-      digitalWrite(BLINK_LED,HIGH);
-      String coords = "/api/v1/"+authKey+"/"+msgtype;
-      Serial.println(coords);
-      int err = http.post(coords, "application/json", _msg);
-      if (err != 0)
-      {
-        SerialMon.println(F("failed to connect"));
-        delay(100);
-        return;
-      }
-      else
-      {
-        Serial.println("post connected");
-      }
-      // int status = http.responseStatusCode();
-      // Serial.printf("status code= %d\n",status);
-      // String body = http.responseBody();
-      // SerialMon.println(F("Response:"));
-      // SerialMon.println(body);
-      http.stop();
-      SerialMon.println(F("Server disconnected"));
-      pushedMsgCount++;
-      digitalWrite(BLINK_LED,LOW);
-  }
-  else
-  {
-    if(typeVal == SHAFT_OTA_INIT)
+    case ATTRIBUTE:
     {
+        msgtype = 0;
+        String _authKey = doc["key"];
+        setAuthKey(_authKey);
+        String _msg="";
+        serializeJson(doc, _msg);
+        JsonObject object = doc.as<JsonObject>();
+        object.remove("type");
+        object.remove("key");
+        _msg="";
+        serializeJson(doc, _msg);
+        Serial.println("message attribute "+_msg);
+        gsmMessage.push(product(msgtype, _msg));
+    }
+    break;
+    case TELEMETRY:
+    {
+        msgtype = 1;
+        String _authKey = doc["key"];
+        setAuthKey(_authKey);
+        String _msg="";
+        serializeJson(doc, _msg);
+        JsonObject object = doc.as<JsonObject>();
+        object.remove("type");
+        object.remove("key");
+        _msg="";
+        serializeJson(doc, _msg);
+        Serial.println("message telemetry "+_msg);
+        gsmMessage.push(product(msgtype, _msg));
+    }
+    break;
+    case SHAFT_VERSION:
+    {
+        String _curVersion=doc["state"];
+        if(version_details.shaft_version=="")
+        {
+          String _msg = "{\"shaft_version\":"+_curVersion+"}";
+          gsmMessage.push(product(ATTRIBUTE, _msg));
+        }
+        version_details.shaft_version = _curVersion;
+        Serial.println("Shaft version received");
+    }
+    break;
+    case SHAFT_KEY:
+    {
+        String _authKey = (doc["state"]);
+        setAuthKey(_authKey);
+        Serial.println("auth key received");
+    }
+    break;
+    case SHAFT_NEW_VERSION:
+    {
+
+    }
+    break;
+    case CABIN_VERSION:
+    {
+        String _curVersion=doc["state"]; 
+        if(version_details.cabin_version=="")
+        {
+          String _msg = "{\"cabin_version\":"+_curVersion+"}";
+          gsmMessage.push(product(ATTRIBUTE, _msg));
+        }
+        version_details.cabin_version = _curVersion;
+        Serial.println("cabin version received");
+    }
+    break;
+    case LIFT_STATUS:
+    {
+
+    }
+    break;
+    case SHAFT_OTA_INIT:
+    {   
       if(doc["state"]=="busy")
       {
-        //shiftUpdateAvailable = true;
+          Serial.println("shaft busy");
+          shaft_ota = OTA_ERROR;   
+      }
+      else if(doc["state"]=="busy_again")
+      {
+          Serial.println("shaft busy after downloading");
+          resetShaftAlert();
       }
       else if(doc["state"]=="idle")
       {
-        addToProcess("true", SHAFT_OTA_ACK);
+          Serial.println("shaft idle");
+          shaft_ota = OTA_DOWNLOAD_FILE;
       }
+      else if(doc["state"]== "ready")
+      {
+          Serial.println("update ready");
+          shaft_ota = OTA_CONNECT_WIFI;
+      }
+      else if(doc["state"]== "same")
+      {
+          Serial.println("update not needed");
+          shaft_ota = OTA_IDLE;
+      }
+      else if(doc["state"]=="true")
+      {
+          Serial.println("update done");
+          String _msg = "{\"shaft_update\":\"complete\"}";
+          gsmMessage.push(product(ATTRIBUTE, _msg));
+          shaft_ota = OTA_COMPLETE;
+          setShaftSucess();
+      }   
     }
+    break;
+    case SHAFT_OTA_ACK:
+    {
+
+    }
+    break;
+    case SHAFT_OTA_COMPLETE:
+    {
+
+    }
+    break;
+    case CABIN_OTA_COMPLETE:
+    {
+
+    }
+    break;
+    default:
+    {
+
+    }
+    break;
   }
+  doc.clear();
 }
+
 
 void initSpiffs()
 {
@@ -278,21 +331,22 @@ void initSpiffs()
   }
 }
 
-void connectServer(char * _server, int _port)
+bool connectServer(char * _server, int _port)
 {
   Serial.print("Connecting to ");
   Serial.print(_server);
-
+  bool state = false;
   // if you get a connection, report back via serial:
   if (!client.connect(_server, _port))
   {
       Serial.println(" fail");
-      return;
   }
   else
   {
+    state = true;
     Serial.println("Connected to server");
   }
+  return state;
 }
 
 
@@ -320,13 +374,14 @@ void makeRequest(char* _server, char* urlPath)
 int readRequest()
 {
   Serial.println("Reading header");
+  contentLength=0;
     while (client.available())
     {
         String line = client.readStringUntil('\n');
         line.trim();    
-        Serial.println(line);    // Uncomment this to show response header
+        //Serial.println(line);    // Uncomment this to show response header
         line.toLowerCase();
-        if (line.startsWith("content-length:"))
+        if (line.startsWith("content-length:") || line.startsWith("Content-Length:"))
         {
             contentLength = line.substring(line.lastIndexOf(':') + 1).toInt();
         }
@@ -335,8 +390,8 @@ int readRequest()
             break;
         }
     }
+    Serial.println("Content length = "+ String(contentLength));
     return contentLength;
-  Serial.println("Content length = "+ String(contentLength));
 }
 
 void printPercent(uint32_t readLength, uint32_t contentLength)
@@ -465,51 +520,87 @@ void performUpdate(Stream &updateSource, size_t updateSize)
     }
     else
     {
-        Serial.println("Cannot beggin update");
+        Serial.println("Cannot begin update");
     }
 }
 
 void otaRoutine()
 {
-   deviceUpdate();
-   //controllerBoardAttributes();
-   //downloadControllerFirmware();
+  downloadControllerFirmware();
 }
 
-void deviceUpdate()
+bool deviceUpdate()
 {
-  static bool prevState = false;
-  if(prevBusyState == false)
+  static bool deviceUpdateProcessComplete = false;
+  switch(controller_ota)
+  {
+  case OTA_IDLE:
+  { 
+    Serial.println("Controller will check and download new verison");
+    controller_ota = OTA_DOWNLOAD_FILE;
+  }
+  break;
+  case OTA_DOWNLOAD_FILE:
   {
     bool state = downloadFirmware(DEVICE_OTA);
-    prevBusyState=state;
+    if(state)
+    {
+      Serial.println("Controller will check for pending logs now");
+      controller_ota = OTA_CHECK_AGAIN;
+    }
+    else
+    {
+      Serial.println("Controller will check shaft OTA now");
+      controller_ota = OTA_ERROR;
+    }
   }
-  else
+  break;
+  case OTA_CHECK_AGAIN:
+  {
+    if(emptyQueue())
+    {
+      Serial.println("No logs are pending - Controller can restart now");
+      controller_ota = OTA_UPDATE;
+    }
+  }
+  break;
+  case OTA_DELAY_TIMER:
+  {
+    deviceUpdateProcessComplete = false;
+    if(millis() - controllerTImer > (TIMER_CHECK))
+    {
+      Serial.println("Timer over - Controller can check OTA now");
+      controllerTImer=millis();
+      controller_ota = OTA_IDLE;
+    }
+  }
+  break;
+  case OTA_UPDATE:
   {
     updateFromFS();
+    controller_ota = OTA_COMPLETE;
   }
-}
+  break;
+  case OTA_ERROR:
+  {
+    controller_ota = OTA_DELAY_TIMER;
+    controllerTImer=millis();
+    deviceUpdateProcessComplete=true;
+  }
+  break;
+  case OTA_COMPLETE:
+  {
+    deviceUpdateProcessComplete = false;
+    ESP.restart();
+  }
+  break;
+  default:
+  {
 
-void controllerBoardAttributes()
-{
-    char swurl[100];
-    snprintf (iotResource, sizeof(iotResource), "/api/v1/%s/attributes?sharedKeys=fw_version,fw_url",authKey);
-    client.stop();
-    if(connectApn())
-    {
-      connectServer(IoTserver,IoTport);
-      makeAttributeRequest(String(iotResource));
-      readRequest();
-      DynamicJsonDocument doc = writeAttributeResponse();
-      //String cabUrl = doc["shared"]["sw_url"];
-      String shafURL = doc["shared"]["fw_url"];
-      
-      //String cabVer = doc["shared"]["sw_version"];
-      String shafVer = doc["shared"]["fw_version"]; 
-      Serial.println(" Shaftver: "+shafVer+" Shafturl: "+shafURL);
-      setShaftAttributes(shafURL,shafVer);
-      //setcabinAttributes(cabUrl,cabVer);
-    }
+  }
+  break;
+  }
+  return deviceUpdateProcessComplete;
 }
 
 bool downloadFirmware(OTA_device dv)
@@ -520,13 +611,12 @@ bool downloadFirmware(OTA_device dv)
   {
   case SHAFT_OTA:
   {
-    shaftURL.toCharArray(endPoint, shaftURL.length() + 1);
-//    memcpy(endPoint, shaftURL.c_str(), sizeof(shaftURL));
+    version_details.shaftURL.toCharArray(endPoint, version_details.shaftURL.length() + 1);
   }
   break;
   case CABIN_OTA:
   {
-    memcpy(endPoint, cabinURL.c_str(), sizeof(cabinURL));
+    version_details.cabinURL.toCharArray(endPoint, version_details.cabinURL.length() + 1);
   }
   break;
   case DEVICE_OTA:
@@ -537,33 +627,30 @@ bool downloadFirmware(OTA_device dv)
   default:
     break;
   }
-  Serial.println("endPoint = ");
-  //Serial.println("Endpoint is "+String(endPoint));
-  for(int i=0;i<(shaftURL.length()+1);i++)
+  Serial.print("endPoint = ");
+  for(int i=0;i<(version_details.shaftURL.length()+1);i++)
   {
     Serial.print(endPoint[i]);
   }
+  Serial.println();
 
   if(connectApn())
   {
-    connectServer(awsserver, awsport);
-    makeRequest(awsserver, endPoint);
-    if(readRequest())
+    if(connectServer(awsserver, awsport))
     {
-      writeFirmware(dv); 
-      status = true;
-    } 
-    else
-    {
-      Serial.println("empty content");
-    } 
+      makeRequest(awsserver, endPoint);
+      if(readRequest())
+      {
+        writeFirmware(dv); 
+        status = true;
+      } 
+      else
+      {
+        Serial.println("empty content");
+      } 
+    }
   }
   return status;
-}
-
-int GSMcount()
-{
-    return pushedMsgCount;
 }
 
 bool pushChange()
@@ -617,22 +704,20 @@ void writeFirmware(int _num)
     uint32_t readLength = 0;
 
     unsigned long timeElapsed = millis();
+    deletePreviosuFiles();
     //printPercent(readLength, contentLength);
     if(_num == SHAFT_OTA)
     {
-      LittleFS.remove("/fwUpdate.bin");//delete if existing already.
       file = LittleFS.open("/fwUpdate.bin", FILE_APPEND);
       Serial.println("Delete and append shaft file");
     } 
     else if(_num == CABIN_OTA)
     {
-      LittleFS.remove("/swUpdate.bin");//delete if existing already.
       file = LittleFS.open("/swUpdate.bin", FILE_APPEND);
       Serial.println("Delete and append cabin file");
     }
     else if(_num == DEVICE_OTA)
     {
-      LittleFS.remove("/update.bin");//delete if existing already.
       file = LittleFS.open("/update.bin", FILE_APPEND);     
       Serial.println("Delete and append device file"); 
     }
@@ -652,21 +737,25 @@ void writeFirmware(int _num)
 		  cur_buffer += read_count;
 		  downloadRemaining -= read_count;
 		  // If one chunk of data has been accumulated, write to SD card
-		  if (cur_buffer - buffer_ == read_count) 
+		  if ((cur_buffer - buffer_ == read_count) &&(read_count))
       {
-        Serial.printf("remaining is %d read_count is %d\n",downloadRemaining,read_count);
+        Serial.println("read count = "+String(read_count));
         file.write(buffer_, read_count);
-			//file.print(buffer_, CHUNK_SIZE);
 			  cur_buffer = buffer_;
 		  }
 		}
 	}
-    file.close();  
+  file.close();  
+  Serial.println("write firmware process over");
 }
 
 void setAuthKey(String _authkey)
 {
-  authKey = _authkey;
+  if(_authkey!="")
+  {
+    Serial.println("received auth key "+ _authkey);
+    version_details.authKey = _authkey;
+  }
 }
 
 
@@ -692,172 +781,499 @@ void makeAttributeRequest(String _buff)
   }
 }
 
-void  setShaftAttributes(String _fwUrl,String _fwVer)
+bool  setShaftAttributes(String _fwUrl,String _fwVer)
 {
-  shaftURL = _fwUrl;
-  if(shaftVersion != _fwVer)
+  version_details.shaftURL = _fwUrl;
+  version_details.shaft_online = _fwVer;
+  if((version_details.shaft_version!=""))
   {
-    Serial.println("Shaft Version changed");
-    Serial.println("shaft version is "+shaftVersion+ " new version is "+_fwVer);
-    shaftVersion = _fwVer;
-    if(shaftURL!=NULL)
+    if(version_details.shaft_version != version_details.shaft_online)
     {
-      shaftUpdateAvailable = true;
-      addToProcess(_fwVer, SHAFT_NEW_VERSION);
+      Serial.println("Shaft Version changed");
+      Serial.println("shaft version is "+version_details.shaft_version+ " new version is "+_fwVer);
+      if(version_details.shaftURL!=NULL)
+      {
+        shaftUpdateAvailable = true;
+        addToProcess(_fwVer, SHAFT_NEW_VERSION);
+      }
+      else
+      {
+        Serial.println("Shaft version null value");
+        shaftUpdateAvailable = false; 
+      }
+      //send message to shaft that update is available
     }
     else
     {
-      shaftUpdateAvailable = false; 
+      Serial.println("Shaft version same");
+      shaftUpdateAvailable=false;
     }
-    //send message to shaft that update is available
   }
   else
   {
     shaftUpdateAvailable=false;
+    Serial.println("Shaft version unavailable");
   }
+  
+  return shaftUpdateAvailable;
 }
 
-void  setcabinAttributes(String _swUrl, String _swVer)
+bool  setcabinAttributes(String _swUrl, String _swVer)
 {
-  cabinURL = _swUrl;
-  if(cabinVersion != _swVer)
+  bool state = false;
+  version_details.cabinURL = _swUrl;
+  version_details.cabin_online = _swVer;
+  if(version_details.cabin_version!="")
   {
-      cabinVersion = _swVer;
-      cabinUpdateAvailable = true;
-      //send message to cabin that update is available
+    if(version_details.cabin_version != version_details.cabin_online)
+    {
+        Serial.println("cabin update message to shaft");
+        state = true;
+    }
+    else
+    {
+      Serial.println("cabin same version");
+    }
   }
+  else
+  {
+    Serial.println("cabin version unavailable");
+  }
+
+  return state;
 }
 
 void downloadControllerFirmware()
 {
-  downloadShaftFirmware();
-  //downloadCabinFirmware();
+  webServerState();
+  static int i =0;
+  switch(i)
+  {
+    case 0:
+    {
+      bool state = deviceUpdate();
+      if(state)
+      {
+        i++;
+      }
+    }
+    break;
+    case 1:
+    {
+      bool state = downloadShaftFirmware();
+      if(state)
+      {
+        i++;
+      }
+    }
+    break;
+    case 2:
+    {
+      bool state = downloadCabinFirmware();
+      if(state)
+      {
+        i++;
+      }
+    }
+    break;
+    default:
+    {
+      i=0;
+    }
+    break;
+  }
 }
 
-void downloadShaftFirmware()
+bool downloadShaftFirmware()
 {
   static bool prevShaftState = false;
+  static bool shaftUpdateProcessComplete = false;
   switch(shaft_ota)
   {
     case OTA_IDLE:
     {
-
+      Serial.println("OTA_IDLE");
+      if(version_details.authKey!="" && !version_details.shaftFirmwareDownloaded)
+      {
+        shaft_ota = OTA_GET_ONLINE_VERSION;
+      }
+      else
+      {
+        Serial.println("shaft authentication key unavailable.");
+        shaft_ota = OTA_ERROR;
+      }
     }
     break;
-    case OTA_POSSIB:
+    case OTA_GET_ONLINE_VERSION:
     {
-
+      char swurl[100];
+      snprintf(iotResource, sizeof(iotResource), "/api/v1/%s/attributes?sharedKeys=fw_version,fw_url",version_details.authKey);
+      Serial.println(iotResource);
+      client.stop();
+      if(connectApn())
+      {
+        Serial.println("shaft");
+        if(connectServer(IoTserver,IoTport))
+        {
+          makeAttributeRequest(String(iotResource));
+          if(readRequest()>2)
+          {
+            DynamicJsonDocument doc(200);
+            doc = writeAttributeResponse();
+            String shafURL = doc["shared"]["fw_url"];
+            String shafVer = doc["shared"]["fw_version"]; 
+            Serial.println(" Shaftver: "+shafVer+" version_details.Shafturl: "+shafURL);
+            bool status = setShaftAttributes(shafURL, shafVer);
+            if(status)
+            {
+              shaft_ota=OTA_DOWNLOAD_FILE;
+            }
+            else
+            {
+              setShaftDelay();
+            }
+          }
+          else
+          {
+            setShaftDelay();
+          }
+        }
+        else
+        {
+          setShaftDelay();
+        }
+      }
+      else
+      {
+        setShaftDelay();
+      }      
     }
     break;
-    case OTA_NOT_NEEDED:
+    case OTA_DELAY_TIMER:
     {
-    
-    }
-    break;
-    case OTA_SEND_ACK_GSM:
-    {
-
-    }
-    break;
-    case OTA_SEND_DEC_GSM:
-    {
-
+      shaftUpdateProcessComplete=false;
+      if(millis() - shaftTimer > (TIMER_CHECK))
+      {
+        shaftTimer=millis();
+        shaft_ota = OTA_IDLE;
+      }
     }
     break;
     case OTA_AWAIT_ACK_GSM:
     {
+      if(millis() - reAlertTimer > 40000)
+      {
+        Serial.println("update retry");
+        reAlertTimer = millis();
+        addToProcess("true", SHAFT_OTA_ACK);
+        timedOut++;
+      }
+      if(timedOut > 3)
+      {
+        Serial.println("ignoring this update. will check cabin");
+        shaft_ota = OTA_ERROR;
+      }
+    }
+    
+    break;
+    case OTA_DOWNLOAD_FILE:
+    {
+      bool state = downloadFirmware(SHAFT_OTA);
+      if(state)
+      {
+        //send acknowlegement
+        version_details.shaftFirmwareDownloaded = true;
+        addToProcess("true", SHAFT_OTA_ACK);
+        Serial.println("Download complete - start wifi");
+        shaft_ota = OTA_CHECK_AGAIN;
+      }
+      else
+      {
+        shaft_ota = OTA_ERROR;
+      }
 
     }
     break;
-    case OTA_SEND_ACK_CABIN:
+    case OTA_CHECK_AGAIN:
     {
-
+      //do nothing
     }
     break;
-    case OTA_SEND_DEC_CABIN:
+    case OTA_CONNECT_WIFI:
     {
-
+      enableHotspot(SHAFT_BOARD);
+      shaft_ota = OTA_CONNECT_SERVER;
     }
     break;
-    case OTA_COMPLETE_END_CABIN:
+    case OTA_CONNECT_SERVER:
     {
-
+      //setServer(SHAFT_BOARD);
+      Serial.println("OTA_CONNECT_SERVER");
+      shaft_ota = OTA_UPDATE;
     }
     break;
-    case OTA_DISCONNECT_ESP_NOW:
+    case OTA_UPDATE:
     {
+      SERVER_OTA_STATUS status = getOTAStatus();
+      switch(status)
+      {
+        case OTA_INIT:
+        {
+
+        }
+        break;
+        case OTA_FAIL:
+        {
+          Serial.println("fail setting sequence to next error step");
+          shaft_ota = OTA_ERROR;
+        }
+        break;
+        case OTA_SUCESS:
+        {
+          Serial.println("sucess setting sequence to next step");
+          shaft_ota = OTA_COMPLETE;
+          setShaftSucess();
+        }
+        break;
+        case OTA_ONGOING:
+        {
+
+        }
+        break;
+        case OTA_TIMEOUT:
+        {
+          Serial.println("timeout setting sequence to idle");
+          shaft_ota = OTA_ERROR;
+        }
+        break;
+        default:
+        {
+          Serial.println("invalid ota state reached");
+          shaft_ota = OTA_ERROR;
+        }
+        break;
+      }
+    }
+    break;
+    case OTA_ERROR:
+    {
+      Serial.println("OTA_ERROR");
+      stopServer();
+      setShaftDelay();
+      shaftUpdateProcessComplete = true;
+    }
+    break;
+    case OTA_COMPLETE:
+    {
+      Serial.println("OTA_COMPLETE");
+      stopServer();
+      setShaftDelay();
+      shaftUpdateProcessComplete = true;
+    }
+    break;
+    default:
+    {
+      setShaftDelay();
+      Serial.println("caught error");
+    }
+    break;
+  }
+  return shaftUpdateProcessComplete;
+}
+
+bool downloadCabinFirmware()
+{
+  static bool prevShaftState = false;
+  static bool cabinUpdateProcessComplete = false;
+  switch(cabin_ota)
+  {
+    case OTA_IDLE:
+    {
+      if(version_details.authKey!="" && !version_details.cabinFirmwareDownloaded)
+      {
+        cabin_ota = OTA_GET_ONLINE_VERSION;
+      }
+      else
+      {
+        Serial.println("cabin authentication key unavailable.");
+        setCabinDelay();
+      }
+    }
+    break;
+    case OTA_GET_ONLINE_VERSION:
+    {
+      char swurl[100];
+      snprintf (iotResource, sizeof(iotResource), "/api/v1/%s/attributes?sharedKeys=sw_version,sw_url",version_details.authKey);
+      Serial.println(iotResource);
+      client.stop();
+      if(connectApn())
+      {
+        if(connectServer(IoTserver,IoTport))
+        {
+          makeAttributeRequest(String(iotResource));
+          int content_len = readRequest();
+          if(content_len>2)
+          {
+            DynamicJsonDocument doc(200);
+            doc = writeAttributeResponse();
+            Serial.println("cabin has key");
+            String cabURL = doc["shared"]["sw_url"];
+            String cabVER = doc["shared"]["sw_version"]; 
+            Serial.println(" Cabin Version: "+cabVER+" Cabin url: "+cabURL);
+            bool state = setcabinAttributes(cabURL, cabVER);
+            if(state)
+            {
+                cabin_ota=OTA_POSSIB;
+            }
+            else
+            {
+              Serial.println("download not available yet");
+              cabin_ota = OTA_ERROR;
+            }
+          }
+          else
+          {
+            Serial.println("received content length = "+String(content_len));
+            cabin_ota = OTA_ERROR;
+          }
+        }
+        else
+        {
+          Serial.println("connect server failed");
+          cabin_ota = OTA_ERROR;
+        }
+      }
+      else
+      {
+        Serial.println("connect internet failed");
+        cabin_ota = OTA_ERROR;
+      }      
+    }
+    break;
+    case OTA_DELAY_TIMER:
+    {
+      cabinUpdateProcessComplete=false;
+      if(millis() - cabinTimer > (TIMER_CHECK))
+      {
+        cabinTimer=millis();
+        cabin_ota = OTA_IDLE;
+      }
+    }
+    break;
+    case OTA_POSSIB:
+    {
+      Serial.println("cabin consider possibility");
+      cabin_ota = OTA_DOWNLOAD_FILE;
+    }
+    break;
+    case OTA_AWAIT_ACK_GSM:
+    {
+      static long int timer = millis();
+      if(millis() - timer > 40000)
+      {
+        timer=millis();
+      }
+    }
+    break;
+    case OTA_DOWNLOAD_FILE:
+    {
+      Serial.println("cabin download");
+      bool state = downloadFirmware(CABIN_OTA);
+      if(state)
+      {
+        //send acknowlegement
+        version_details.cabinFirmwareDownloaded = true;
+        addToProcess("true", CABIN_VERSION);
+        Serial.println("Download complete - start wifi");
+        cabin_ota = OTA_CONNECT_WIFI;
+      }
+      else
+      {
+        cabin_ota = OTA_ERROR;
+      }
 
     }
     break;
     case OTA_CONNECT_WIFI:
     {
-
+      enableHotspot(CABIN_BOARD);
+      cabin_ota = OTA_CONNECT_SERVER;
     }
     break;
     case OTA_CONNECT_SERVER:
     {
-
-    }
-    break;
-    case OTA_DOWNLOAD_FILE:
-    {
-
+      //setServer(SHAFT_BOARD);
+      cabin_ota = OTA_UPDATE;
     }
     break;
     case OTA_UPDATE:
     {
+      SERVER_OTA_STATUS status = getOTAStatus();
+      switch(status)
+      {
+        case OTA_INIT:
+        {
 
+        }
+        break;
+        case OTA_FAIL:
+        {
+          Serial.println("fail setting sequence to next error step");
+          cabin_ota = OTA_ERROR;
+        }
+        break;
+        case OTA_SUCESS:
+        {
+          Serial.println("sucess setting sequence to next step");
+          cabin_ota = OTA_COMPLETE;
+        }
+        break;
+        case OTA_ONGOING:
+        {
+
+        }
+        break;
+        case OTA_TIMEOUT:
+        {
+          Serial.println("timeout setting sequence to idle");
+          cabin_ota = OTA_ERROR;
+        }
+        break;
+        default:
+        {
+          Serial.println("invalid ota state reached");
+          cabin_ota = OTA_ERROR;
+        }
+        break;
+      }
     }
     break;
     case OTA_ERROR:
     {
-
+      stopServer();
+      cabin_ota = OTA_IDLE;
+      setCabinDelay();
+      cabinUpdateProcessComplete = true;
     }
     break;
     case OTA_COMPLETE:
     {
-
+      stopServer();
+      cabin_ota = OTA_IDLE;
+      setCabinDelay();
+      String _msg = "{\"cabin_update\":\"complete\"}";
+      gsmMessage.push(product(ATTRIBUTE, _msg));
+      cabinUpdateProcessComplete = true;
     }
     break;
     default:
     {
       Serial.println("caught error");
+      setCabinDelay();
     }
     break;
   }
-  if(shaftUpdateAvailable)
-  {
-    bool state = downloadFirmware(SHAFT_OTA);
-    if(prevShaftState!=state)
-    {
-      prevShaftState=state;
-      if(state)
-      {
-        //send message to shaft that update is downloaded and ready
-      }
-      else
-      {
-        Serial.println("Shaft OTA Error occured ");
-      }
-    }
-
-  }
-}
-
-void downloadCabinFirmware()
-{
-  if(cabinUpdateAvailable)
-  {
-    bool state = downloadFirmware(CABIN_OTA);
-    if(state)
-    {
-      //send message to shaft that update is downloaded and ready
-    }
-    else
-    {
-      Serial.println("cabin OTA Error occured ");
-    }
-  }
+  return cabinUpdateProcessComplete;
 }
 
 void addToProcess(String val, int value)
@@ -865,13 +1281,178 @@ void addToProcess(String val, int value)
   static String prevVal = "";
   if(prevVal != val)
   {
-    prevVal=val;
+    //prevVal=val;
     Serial1.flush();
-    DynamicJsonDocument doc(200);
+    DynamicJsonDocument doc(150);
     doc["type"]=value;
     doc["state"]=val;
     serializeJson(doc,Serial1);  
-    //Serial.println("&&&&");
+    Serial.println("&&&&");
     doc.clear(); 
   }
+}
+
+void setCabinDelay()
+{
+  Serial.println("set cabin delay");
+  cabinTimer=millis();
+  cabin_ota = OTA_DELAY_TIMER;
+}
+
+
+void setShaftDelay()
+{
+  Serial.println("set shaft delay");
+  shaftTimer=millis();
+  shaft_ota = OTA_DELAY_TIMER;
+}
+
+void setControllerDelay()
+{
+  Serial.println("set controller delay");
+  controllerTImer=millis();
+  controller_ota = OTA_DELAY_TIMER;
+}
+
+void deletePreviosuFiles()
+{
+  LittleFS.remove("/fwUpdate.bin");//delete if existing already.
+  LittleFS.remove("/swUpdate.bin");//delete if existing already.
+  LittleFS.remove("/update.bin");//delete if existing already.
+  resetFirmwareDownloadDetails();
+}
+
+String getLocalShaftVersion()
+{
+    return version_details.shaft_version;
+}
+
+String getLocalCabinVersion()
+{
+    return version_details.cabin_version;
+}
+
+void setCabinVersion(String version)
+{
+    version_details.cabin_version = version;
+}
+void setshaftVersion(String version)
+{
+    version_details.shaft_version = version;
+}
+
+String getOnlineCabinVersion()
+{
+  return version_details.cabin_online;
+}
+
+void setCabinSucess()
+{
+  version_details.cabin_version = version_details.cabin_online;
+}
+
+void setShaftSucess()
+{
+  version_details.shaft_version = version_details.shaft_online;
+}
+
+bool emptyDetails()
+{
+  bool status = false;
+  if((version_details.shaft_online=="") && (version_details.authKey==""))
+  {
+    status = true;
+  }
+  return status;
+}
+
+void resetShaftAlert()
+{
+  reAlertTimer = millis();
+  shaft_ota = OTA_AWAIT_ACK_GSM;
+  timedOut = 0;
+}
+
+void resetFirmwareDownloadDetails()
+{
+  version_details.shaftFirmwareDownloaded = false;
+  version_details.cabinFirmwareDownloaded = false;
+}
+
+float getVersion()
+{
+  return cur_version;
+}
+
+product getFirstMsg()
+{
+    return gsmMessage.front();
+}
+
+void sendQueuedDataToGSM()
+{
+  static long int checkInterval = millis();
+  // if(!emptyQueue() && (!updateInProgress()))
+  if(!emptyQueue())
+  {
+    Serial.printf("Shaft msg count");
+    product newMsg = getFirstMsg();
+    publishSerialData(newMsg);
+  }
+}
+
+void publishSerialData(product s)
+{
+  int typeVal = s.x;
+  String _msg = s.y;
+  String msgType = typeVal?"telemetry":"attributes";
+  // if(typeVal == ATTRIBUTE)
+  // {
+  //   msgType = "attributes";
+  // }
+  // else if(typeVal == TELEMETRY)
+  // {
+  //   msgType == "telemetry";
+  // }
+  if((version_details.authKey!=""))
+  {
+    pushedMsgCount++;
+    setIndicator(BLINK_TWICE);
+    String coords = "/api/v1/"+version_details.authKey+"/"+msgType;
+    Serial.println(coords);
+    int err = http.post(coords, "application/json", _msg);
+    if (err != 0)
+    {
+      SerialMon.println(F("failed to connect"));
+      delay(100);
+      return;
+    }
+    else
+    {
+      Serial.println("post connected");
+    }
+    int status = http.responseStatusCode();
+    Serial.printf("status code= %d\n",status);
+    String body = http.responseBody();
+    SerialMon.println(F("Response:"));
+    SerialMon.println(body);
+    http.stop();
+    SerialMon.println(F("Server disconnected"));
+    setIndicator(TURN_OFF);
+  }
+  else
+  {
+    Serial.println("publish authentication key unavailable");
+  }
+}
+
+bool emptyQueue()
+{
+    return gsmMessage.empty();
+}
+
+void popFront()
+{
+    gsmMessage.pop();
+    Serial.println("Popped the first one");
 }
