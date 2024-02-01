@@ -2,7 +2,7 @@ name: Build
 on:
   push:
     branches:
-      - main
+      - semi_stable
   pull_request:
     types: [opened, synchronize, reopened]
 jobs:
