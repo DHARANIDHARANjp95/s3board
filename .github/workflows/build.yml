@@ -1,34 +1,30 @@
-name: SonarCloud
+name: Build
 on:
   push:
     branches:
-      - semi_stable
+      - main
   pull_request:
     types: [opened, synchronize, reopened]
 jobs:
   build:
-    name: Build and analyze
-    runs-on: windows-latest
+    name: Build
+    runs-on: ubuntu-latest
     env:
       BUILD_WRAPPER_OUT_DIR: build_wrapper_output_directory # Directory where build-wrapper output will be placed
     steps:
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v4
         with:
-          fetch-depth: 0  # Shallow clones should be disabled for a better relevancy of analysis
-      - uses: arduino/compile-sketches@v1
-        with: 
-          fqbn: "esp32:esp32:esp32s3"
-          platforms: | 
-           - name: esp32:esp32
-             source-url: https://espressif.github.io/arduino-esp32/package_esp32_dev_index.json
+          fetch-depth: 0 # Shallow clones should be disabled for a better relevancy of analysis
       - name: Install sonar-scanner and build-wrapper
         uses: SonarSource/sonarcloud-github-c-cpp@v2
       - name: Run build-wrapper
         run: |
-          build-wrapper-win-x86-64 --out-dir ${{ env.BUILD_WRAPPER_OUT_DIR }} arduino-cli compile --fqbn esp32:esp32:esp32s3 .\HttpClient_lte.ino
+          autoreconf --install
+          ./configure
+          build-wrapper-linux-x86-64 --out-dir ${{ env.BUILD_WRAPPER_OUT_DIR }} make clean all
       - name: Run sonar-scanner
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+          SONAR_TOKEN: ${{ secrets.SONARCLOUD_TOKEN }} # Put the name of your token here
         run: |
           sonar-scanner --define sonar.cfamily.build-wrapper-output="${{ env.BUILD_WRAPPER_OUT_DIR }}"
