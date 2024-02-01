@@ -7,7 +7,7 @@
 #include "gsm_module.h"
 #include "ShaftLog.h"
 #include <ArduinoJson.h>
-
+#include "common.h"
 #include <bits/stdc++.h>
 using namespace std;
 
@@ -77,8 +77,11 @@ HttpClient    http(client, IoTserver, IoTport);
 String message="";
 
 String makerId = "ASM_S3_PRO_1";
-String sNo = "factoryg3";
-String controllerType="debug";
+String controllerType="ltemodules3";
+
+float cur_version = 1.2;
+float next_version = cur_version+0.1;
+
 char urlResource[80];
 char shaftResource[80];
 char iotResource[100];
@@ -103,8 +106,7 @@ typedef enum
 } call_type;
 
 int pushedMsgCount = 0;
-float cur_version = 1.1;
-float next_version = cur_version+0.1;
+
 
 bool prevBusyState;
 
@@ -153,7 +155,12 @@ ota_stages controller_ota = OTA_DELAY_TIMER;
 
 void gsm_init()
 {
-    Serial2.begin(115200);
+  
+    #ifdef S3_used
+      Serial2.begin(115200, SERIAL_8N1, 17, 18);
+    #else
+      Serial2.begin(115200);
+    #endif
     initLED();
     Serial.println("Initializing modem...");
     modem.init();
@@ -252,7 +259,7 @@ void parseData(String s)
           gsmMessage.push(product(ATTRIBUTE, _msg));
         }
         version_details.cabin_version = _curVersion;
-        Serial.println("cabin version received");
+        Serial.println("cabin version received"+String(_curVersion));
     }
     break;
     case LIFT_STATUS:
@@ -546,7 +553,7 @@ bool deviceUpdate()
     if(state)
     {
       Serial.println("Controller will check for pending logs now");
-      controller_ota = OTA_CHECK_AGAIN;
+      controller_ota = OTA_UPDATE;
     }
     else
     {
@@ -818,7 +825,7 @@ bool  setShaftAttributes(String _fwUrl,String _fwVer)
   return shaftUpdateAvailable;
 }
 
-bool  setcabinAttributes(String _swUrl, String _swVer)
+bool setcabinAttributes(String _swUrl, String _swVer)
 {
   bool state = false;
   version_details.cabinURL = _swUrl;
@@ -846,7 +853,7 @@ bool  setcabinAttributes(String _swUrl, String _swVer)
 void downloadControllerFirmware()
 {
   webServerState();
-  static int i =0;
+  static int i =2;
   switch(i)
   {
     case 0:
@@ -858,7 +865,7 @@ void downloadControllerFirmware()
       }
     }
     break;
-    case 1:
+    case 2:
     {
       bool state = downloadShaftFirmware();
       if(state)
@@ -867,7 +874,7 @@ void downloadControllerFirmware()
       }
     }
     break;
-    case 2:
+    case 1:
     {
       bool state = downloadCabinFirmware();
       if(state)
@@ -893,7 +900,7 @@ bool downloadShaftFirmware()
     case OTA_IDLE:
     {
       Serial.println("OTA_IDLE");
-      if(version_details.authKey!="" && !version_details.shaftFirmwareDownloaded)
+      if(version_details.authKey!="")
       {
         shaft_ota = OTA_GET_ONLINE_VERSION;
       }
@@ -930,22 +937,22 @@ bool downloadShaftFirmware()
             }
             else
             {
-              setShaftDelay();
+              shaft_ota = OTA_ERROR;
             }
           }
           else
           {
-            setShaftDelay();
+            shaft_ota = OTA_ERROR;
           }
         }
         else
         {
-          setShaftDelay();
+          shaft_ota = OTA_ERROR;
         }
       }
       else
       {
-        setShaftDelay();
+        shaft_ota = OTA_ERROR;
       }      
     }
     break;
@@ -1089,14 +1096,14 @@ bool downloadCabinFirmware()
   {
     case OTA_IDLE:
     {
-      if(version_details.authKey!="" && !version_details.cabinFirmwareDownloaded)
+      if(version_details.authKey!="")
       {
         cabin_ota = OTA_GET_ONLINE_VERSION;
       }
       else
       {
         Serial.println("cabin authentication key unavailable.");
-        setCabinDelay();
+        cabin_ota = OTA_ERROR;
       }
     }
     break;
@@ -1392,8 +1399,8 @@ product getFirstMsg()
 void sendQueuedDataToGSM()
 {
   static long int checkInterval = millis();
-  // if(!emptyQueue() && (!updateInProgress()))
-  if(!emptyQueue())
+  if(!emptyQueue() && (!updateInProgress()))
+  //if(!emptyQueue())
   {
     Serial.printf("Shaft msg count");
     product newMsg = getFirstMsg();

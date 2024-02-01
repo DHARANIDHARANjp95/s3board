@@ -26,8 +26,14 @@ bool receivedMsg = false;
 
 String postMsg = "";
 
+#ifdef S3_used
+#define SERIAL1_RXPIN 41
+#define SERIAL1_TXPIN 42
+#else
 #define SERIAL1_RXPIN 25
 #define SERIAL1_TXPIN 26
+#endif
+
 
 
 /****************************************/
